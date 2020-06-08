@@ -9,7 +9,7 @@ pub struct CHIP8 {
     i: u16,           // Index Register (Used for storing memory addresses)
     dt: u8,           // Delay Timer Register
     st: u8,           // Sound Timer Register
-    screen: [[bool; 64]; 32],
+    pub screen: [[bool; 64]; 32],
 }
 
 enum PCAction {
@@ -20,7 +20,7 @@ enum PCAction {
 }
 
 impl CHIP8 {
-    pub fn new(program_bytes: std::vec::Vec<u8>) -> Self {
+    pub fn new(program_bytes: [u8; 3584]) -> Self {
         let mut chip = CHIP8 {
             mem: [0; 4096],
             vx: [0; 16],
@@ -105,31 +105,21 @@ impl CHIP8 {
         }
     }
 
-    fn get_pixel(&self, x: usize, y: usize) -> Result<bool, &str> {
-        if x < 64 && y < 32 {
-            Ok(self.screen[y][x])
-
-        } else {
-            Err("Tried to get pixel out of screen.")
-        }
-    }
-
-    fn set_pixel(&mut self, x: usize, y: usize, val: bool) -> Result<(), &str> {
-        if x < 64 && y < 32 {
-            self.screen[y][x] = val;
-            Ok(())
-
-        } else {
-            Err("Tried to set pixel out of screen.")
-        }
-    }
-
     fn read_opcode(&self) -> u16 {
         ((self.mem[self.pc as usize] as u16) << 8) 
         | (self.mem[(self.pc + 1) as usize] as u16)
     }
 
-    fn exec_opcode(&mut self, opcode: u16, keys: &[bool; 16], key_pressed: Option<u8>) {
+    pub fn tick(&mut self, keypad: [bool; 16]) -> bool {
+        self.tick_sound_timer();
+        self.tick_delay_timer();
+
+        let opcode = self.read_opcode();
+
+        self.exec_opcode(opcode, keypad)
+    }
+
+    fn exec_opcode(&mut self, opcode: u16, keys: [bool; 16]) -> bool {
         let units = (
             ((opcode & 0xF000) >> 12) as usize,
             ((opcode & 0x0F00) >> 8) as usize,
@@ -430,14 +420,17 @@ impl CHIP8 {
             // Fx0A - LD Vx, K
             // Wait for a key press, store the value of the key in Vx.
             (0xF, _, 0x0, 0xA) => {
-                match key_pressed {
-                    Some(val) => {
-                        self.vx[units.1] = val;
-                        PCAction::Next
-                    }
+                let mut key_found = false;
 
-                    None => PCAction::Stay
+                for i in 0..16 {
+                    if keys[i] {
+                        self.vx[units.1] = i as u8;
+                        key_found = true;
+                        break;
+                    }
                 }
+
+                if key_found { PCAction::Next } else { PCAction::Stay }
             }
 
             // Fx15 - LD DT, Vx
@@ -454,7 +447,52 @@ impl CHIP8 {
                 PCAction::Next
             }
 
+            // Fx1E - ADD I, Vx
+            // Set I = I + Vx.
+            (0xF, _, 0x1, 0xE) => {
+                self.i += self.vx[units.1] as u16;
+                PCAction::Next
+            }
 
+            // Fx29 - LD F, Vx
+            // Set I = location of sprite for digit Vx.
+            (0xF, _, 0x2, 0x9) => {
+                self.i = u16::from(self.vx[units.1] * 5);
+                PCAction::Next
+            }
+
+            // Fx33 - LD B, Vx
+            // Store BCD representation of Vx in memory locations I, I+1, and I+2.
+            (0xF, _, 0x3, 0x3) => {
+                for x in 0..3 {
+                    let vx = self.vx[units.1];
+                    self.mem[(self.i + x) as usize] = vx / 10_u8.pow(u32::from(2 - x));
+                }
+
+                PCAction::Next
+            }
+
+            // Fx55 - LD [I], Vx
+            // Store registers V0 through Vx in memory starting at location I.
+            (0xF, _, 0x5, 0x5) => {
+                for x in 0..16 {
+                    self.mem[usize::from(self.i) + x] = self.vx[x];
+                }
+
+                PCAction::Next
+            }
+
+            // Fx65 - LD Vx, [I]
+            // Read registers V0 through Vx from memory starting at location I.
+            (0xF, _, 0x6, 0x5) => {
+                for x in 0..16 {
+                    self.vx[x] = self.mem[usize::from(self.i) + x];
+                }
+
+                PCAction::Next
+            }
+
+            // Just go ahead if illegal opcode detected.
             _ => PCAction::Next
         };
 
@@ -464,5 +502,7 @@ impl CHIP8 {
             PCAction::Jump(addr) => self.pc = addr,
             PCAction::Stay => {}
         }
+        
+        screen_changed
     }
 }
