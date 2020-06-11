@@ -3,7 +3,9 @@ Chipper8.rs will be a CHIP-8 emulator/interpreter written in Rust. Just a small 
 Thinking of making this a pure CLI, but I might add a GUI too.\
 Update: Implementing a GUI is actually easier so that's what I'm gonna do. The CLI will just refer to the ability to use the command line to load games.\
 \
-Update 2: It works quite well now. Only thing that remains is adding sound support.
+Update 2: It works quite well now. Only thing that remains is adding sound support.\
+\
+Note: The disassembler does not return actual syntactically correct code. It just converts the program bytes into a textual format with helpful comments at each line.
 
 ## What is CHIP-8?
 CHIP-8 is a simple interpreted programming language that was developed by Joseph Weisbecker back in the 1970s for the COSMAC VIP and Telmac 1800 Microcomputers. It was used to create quite a few games too. More information can be found on the [Wikipedia Article](https://en.wikipedia.org/wiki/CHIP-8).
