@@ -10,17 +10,18 @@ pub struct CHIP8 {
     dt: u8,           // Delay Timer Register
     st: u8,           // Sound Timer Register
     pub screen: [[bool; 64]; 32],
+    key_waiting: bool,
+    key_reg: u8
 }
 
 enum PCAction {
     Next,
-    Skip(u16),
+    Skip,
     Jump(u16),
-    Stay,
 }
 
 impl CHIP8 {
-    pub fn new(program_bytes: [u8; 3584]) -> Self {
+    pub fn new(program_bytes: Vec<u8>) -> Self {
         let mut chip = CHIP8 {
             mem: [0; 4096],
             vx: [0; 16],
@@ -31,6 +32,8 @@ impl CHIP8 {
             dt: 0,
             st: 0,
             screen: [[false; 64]; 32],
+            key_waiting: false,
+            key_reg: 0,
         };
 
         let nums: [[u8; 5]; 16] = [
@@ -55,17 +58,19 @@ impl CHIP8 {
         let mut i: usize = 0;
 
         for num_data in nums.iter() {
-            for row in num_data.iter() {
-                chip.mem[i] = *row;
+            for &row in num_data.iter() {
+                chip.mem[i] = row;
                 i += 1;
             }
         }
 
         i = 0x200;
 
-        for byte in program_bytes.iter() {
-            chip.mem[i] = *byte;
-            i += 0x001;
+        for &byte in program_bytes.iter() {
+            if i < 0xFFFF {
+                chip.mem[i] = byte;
+                i += 0x001;
+            }
         }
 
         chip
@@ -106,20 +111,36 @@ impl CHIP8 {
     }
 
     fn read_opcode(&self) -> u16 {
-        ((self.mem[self.pc as usize] as u16) << 8) 
-        | (self.mem[(self.pc + 1) as usize] as u16)
+        let opcode = ((self.mem[self.pc as usize] as u16) << 8) 
+        | (self.mem[(self.pc + 1) as usize] as u16);
+        opcode
     }
 
     pub fn tick(&mut self, keypad: [bool; 16]) -> bool {
-        self.tick_sound_timer();
-        self.tick_delay_timer();
 
-        let opcode = self.read_opcode();
+        if self.key_waiting {
+            for (i, &key) in keypad.iter().enumerate() {
+                if key {
+                    self.key_waiting = false;
+                    self.vx[self.key_reg as usize] = i as u8;
+                }
+            }
 
-        self.exec_opcode(opcode, keypad)
+            false
+
+        } else {
+            self.tick_sound_timer();
+            self.tick_delay_timer();
+
+            let opcode = self.read_opcode();
+
+            self.exec_opcode(opcode, keypad)
+        }
+
+        
     }
 
-    fn exec_opcode(&mut self, opcode: u16, keys: [bool; 16]) -> bool {
+    pub fn exec_opcode(&mut self, opcode: u16, keys: [bool; 16]) -> bool {
         let units = (
             ((opcode & 0xF000) >> 12) as usize,
             ((opcode & 0x0F00) >> 8) as usize,
@@ -129,11 +150,20 @@ impl CHIP8 {
 
         let mut screen_changed = false;
 
+        //ncurses::addstr(&format!("{:x}\n", opcode));
+
         let pc_action: PCAction = match units {
             // 00E0 - CLS
             // Clears the screen
             (0x0, 0x0, 0xE, 0x0) => {
-                self.screen = [[false; 64]; 32];
+                for y in 0..64 {
+                    for x in 0..32 {
+                        self.screen[y][x] = false;
+                    }
+                }
+
+                screen_changed = true;
+
                 PCAction::Next
             }
 
@@ -156,7 +186,7 @@ impl CHIP8 {
             // Calls subroutine from nnn
             // The interpreter increments the stack pointer, then puts the current PC on the top of the stack. The PC is then set to nnn.
             (0x2, _, _, _) => {
-                self.stack_push(self.pc).expect("Stack Error");
+                self.stack_push(self.pc + 2).expect("Stack Error");
                 PCAction::Jump(opcode & 0x0FFF)
             }
 
@@ -166,7 +196,7 @@ impl CHIP8 {
                 let vx = self.vx[units.1];
                 let byte = (opcode & 0x00FF) as u8;
                 if vx == byte {
-                    PCAction::Skip(1)
+                    PCAction::Skip
                 } else {
                     PCAction::Next
                 }
@@ -178,7 +208,7 @@ impl CHIP8 {
                 let vx = self.vx[units.1];
                 let byte = (opcode & 0x00FF) as u8;
                 if vx != byte {
-                    PCAction::Skip(1)
+                    PCAction::Skip
                 } else {
                     PCAction::Next
                 }
@@ -190,7 +220,7 @@ impl CHIP8 {
                 let vx = self.vx[units.1];
                 let vy = self.vx[units.2];
                 if vx == vy {
-                    PCAction::Skip(1)
+                    PCAction::Skip
                 } else {
                     PCAction::Next
                 }
@@ -209,7 +239,7 @@ impl CHIP8 {
             (0x7, _, _, _) => {
                 let vx_val = self.vx[units.1];
                 let byte = (opcode & 0x00FF) as u8;
-                self.vx[units.1] = vx_val + byte;
+                self.vx[units.1] = vx_val.wrapping_add(byte);
                 PCAction::Next
             }
 
@@ -250,15 +280,15 @@ impl CHIP8 {
             // 8xy4 - ADD Vx, Vy
             // Set Vx = Vx + Vy, set VF = carry.
             (0x8, _, _, 0x4) => {
-                let vx = self.vx[units.1] as u16;
-                let vy = self.vx[units.2] as u16;
-                let addn = vx + vy;
+                let vx = self.vx[units.1];
+                let vy = self.vx[units.2];
+                let addn = vx as u16 + vy as u16;
                 if addn > 0xFF {
                     self.vx[0xF as usize] = 1;
                 } else {
                     self.vx[0xF as usize] = 0;
                 }
-                self.vx[units.1] = (addn & 0x00FF) as u8;
+                self.vx[units.1] = addn as u8;
                 PCAction::Next
             }
 
@@ -305,7 +335,7 @@ impl CHIP8 {
             // If the most-significant bit of Vx is 1, then VF is set to 1, otherwise to 0. Then Vx is multiplied by 2.
             (0x8, _, _, 0xE) => {
                 let vx = self.vx[units.1];
-                self.vx[0xF as usize] = vx & 0x80;
+                self.vx[0xF as usize] = (vx & 0x80) >> 7;
                 self.vx[units.1] = vx << 1;
                 PCAction::Next
             }
@@ -316,7 +346,7 @@ impl CHIP8 {
                 let vx = self.vx[units.1];
                 let vy = self.vx[units.2];
                 if vx != vy {
-                    PCAction::Skip(1)
+                    PCAction::Skip
                 } else {
                     PCAction::Next
                 }
@@ -339,7 +369,7 @@ impl CHIP8 {
             // Set Vx = random byte AND kk.
             (0xC, _, _, _) => {
                 let mut rng = rand::thread_rng();
-                let rand_n = rng.gen_range(0, 256) as u8;
+                let rand_n = rng.gen::<u8>();
                 let byte = (opcode & 0x00FF) as u8;
                 self.vx[units.1] = rand_n & byte;
                 PCAction::Next
@@ -357,24 +387,23 @@ impl CHIP8 {
 
             */
             (0xD, _, _, _) => {
-                let s_x = units.1;
-                let s_y = units.2;
+                let s_x = self.vx[units.1];
+                let s_y = self.vx[units.2];
                 let y_max = units.3;
                 let mut collision = false;
 
                 for y in 0..y_max {
-                    let y_val = ((s_y + y) % 32) as usize;
-                    let mut byte = self.mem[self.i as usize + y];
+                    let y_val = ((s_y as usize + y) % 32) as usize;
+                    let byte = self.mem[self.i as usize + y];
 
-                    for x in (0..8).rev() {
+                    for x in 0..8 {
                         let x_val = ((s_x + x) % 64) as usize;
-                        let pix_val = (byte & 0x1) == 1;
+                        let pix_val = ((byte >> (7 - x)) & 1) == 1;
                         let drawn = pix_val ^ self.screen[y_val][x_val];
-                        if !drawn {
+                        if pix_val && self.screen[y_val][x_val] {
                             collision = true;
                         }
                         self.screen[y_val][x_val] = drawn;
-                        byte >>= 1;
                     }
                 }
 
@@ -393,8 +422,10 @@ impl CHIP8 {
             // Ex9E - SKP Vx
             // Skip next instruction if key with the value of Vx is pressed.
             (0xE, _, 0x9, 0xE) => {
-                if keys[units.1] {
-                    PCAction::Skip(1)
+                let vx = self.vx[units.1];
+
+                if keys[vx as usize] {
+                    PCAction::Skip
                 } else {
                     PCAction::Next
                 }
@@ -403,8 +434,10 @@ impl CHIP8 {
             // ExA1 - SKNP Vx
             // Skip next instruction if key with the value of Vx is not pressed.
             (0xE, _, 0xA, 0x1) => {
-                if !keys[units.1] {
-                    PCAction::Skip(1)
+                let vx = self.vx[units.1];
+
+                if !keys[vx as usize] {
+                    PCAction::Skip
                 } else {
                     PCAction::Next
                 }
@@ -420,17 +453,10 @@ impl CHIP8 {
             // Fx0A - LD Vx, K
             // Wait for a key press, store the value of the key in Vx.
             (0xF, _, 0x0, 0xA) => {
-                let mut key_found = false;
+                self.key_waiting = true;
+                self.key_reg = units.1 as u8;
 
-                for i in 0..16 {
-                    if keys[i] {
-                        self.vx[units.1] = i as u8;
-                        key_found = true;
-                        break;
-                    }
-                }
-
-                if key_found { PCAction::Next } else { PCAction::Stay }
+                PCAction::Next
             }
 
             // Fx15 - LD DT, Vx
@@ -451,23 +477,24 @@ impl CHIP8 {
             // Set I = I + Vx.
             (0xF, _, 0x1, 0xE) => {
                 self.i += self.vx[units.1] as u16;
+                self.vx[0xF as usize] = if self.i > 0x0F00 {1} else {0};
                 PCAction::Next
             }
 
             // Fx29 - LD F, Vx
             // Set I = location of sprite for digit Vx.
             (0xF, _, 0x2, 0x9) => {
-                self.i = u16::from(self.vx[units.1] * 5);
+                self.i = self.vx[units.1] as u16 * 5;
                 PCAction::Next
             }
 
             // Fx33 - LD B, Vx
             // Store BCD representation of Vx in memory locations I, I+1, and I+2.
             (0xF, _, 0x3, 0x3) => {
-                for x in 0..3 {
-                    let vx = self.vx[units.1];
-                    self.mem[(self.i + x) as usize] = vx / 10_u8.pow(u32::from(2 - x));
-                }
+                let vx = self.vx[units.1];
+                self.mem[self.i as usize] = vx / 100;
+                self.mem[(self.i + 1) as usize] = (vx % 100) / 10;
+                self.mem[(self.i + 2) as usize] = vx % 10;
 
                 PCAction::Next
             }
@@ -475,8 +502,8 @@ impl CHIP8 {
             // Fx55 - LD [I], Vx
             // Store registers V0 through Vx in memory starting at location I.
             (0xF, _, 0x5, 0x5) => {
-                for x in 0..16 {
-                    self.mem[usize::from(self.i) + x] = self.vx[x];
+                for x in 0..=units.1 {
+                    self.mem[self.i as usize + x] = self.vx[x];
                 }
 
                 PCAction::Next
@@ -485,8 +512,8 @@ impl CHIP8 {
             // Fx65 - LD Vx, [I]
             // Read registers V0 through Vx from memory starting at location I.
             (0xF, _, 0x6, 0x5) => {
-                for x in 0..16 {
-                    self.vx[x] = self.mem[usize::from(self.i) + x];
+                for x in 0..=units.1 {
+                    self.vx[x] = self.mem[self.i as usize + x];
                 }
 
                 PCAction::Next
@@ -498,9 +525,8 @@ impl CHIP8 {
 
         match pc_action {
             PCAction::Next => self.pc += 2,
-            PCAction::Skip(num) => self.pc += (num + 1) * 2,
+            PCAction::Skip => self.pc += 4,
             PCAction::Jump(addr) => self.pc = addr,
-            PCAction::Stay => {}
         }
         
         screen_changed
