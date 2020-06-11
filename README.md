@@ -22,3 +22,6 @@ In that case, you should check out the following two websites :-
 - [Matthew Mikolay's "Mastering CHIP-8"](http://mattmik.com/files/chip8/mastering/chip8.html)  
 
 Mattmik's website is great for understanding the CHIP-8 language and Cowgod's website is a very concise and helpful reference.
+
+## Credits
+Thanks to Cowgod for the amazing technical reference. All the opcode comments in the code have been directly picked up from their reference.
