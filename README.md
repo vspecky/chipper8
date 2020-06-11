@@ -13,7 +13,7 @@ CHIP-8 is a simple interpreted programming language that was developed by Joseph
 - Compile the code.  
 - Run the game from the terminal as so  
 ```
-./executable <rom_file>
+./executable <path_to_rom_file>
 ```
 
 ## What if I wanna do my own implementation?
